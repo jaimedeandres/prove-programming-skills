@@ -1,0 +1,217 @@
+---
+title: "Oaxaca"
+author: "Jaime de Andres Velasco"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(summarytools)
+library(AER)
+library(lmtest)
+library(sandwich)
+library(plm)
+library(oaxaca)
+library(haven)
+library(Hmisc)
+library(magrittr)
+library(xtable)
+library(fixest)
+library(jtools)
+library(lfe)
+```
+
+## OPENING AND MODIFIYING DATA
+
+```{r }
+column_types <- cols( .default = col_double(), NACIONALIDAD = col_character())
+
+
+data <- read_csv("C:/Users/jaime/Desktop/Economia/TFG/Datos/Tablas Finales/Tablas con instrumento 1/COMBINED_TABLE.csv", col_types = column_types)
+umbalance_d <- read_csv('C:/Users/jaime/Desktop/Economia/TFG/Datos/Tablas Finales/COMBINED_TABLE.csv', col_types = column_types)
+
+summary(umbalance_d)
+
+# Definir la función para filtrar individuos observados un número mínimo de años
+filtrar_individuos_observados <- function(data, n_years_min = 2) {
+  # Contar el número de años en los que cada individuo ha sido observado
+  observados_multiples_anios <- data %>%
+    group_by(IPF) %>%
+    summarise(n_years = n_distinct(Year)) %>%
+    filter(n_years >= n_years_min)
+  
+  # Filtrar el dataframe original para quedarnos solo con los individuos que han sido observados el número mínimo de años
+  data_filtrada <- data %>%
+    filter(IPF %in% observados_multiples_anios$IPF)
+  
+  # Devolver el dataframe filtrado
+  return(data_filtrada)
+}
+```
+
+```{r}
+
+# Supongamos que tu dataframe se llama umbalance_d
+# Llamar a la función con los datos y especificar el número mínimo de años
+
+#umbalance_d_2 <- filtrar_individuos_observados(umbalance_d, n_years_min = 2)
+#umbalance_d_8 <- filtrar_individuos_observados(umbalance_d, n_years_min = 8)
+#umbalance_d_12 <- filtrar_individuos_observados(umbalance_d, n_years_min = 12)
+umbalance_d_14 <- filtrar_individuos_observados(umbalance_d, n_years_min = 14)
+```
+
+```{r}
+# Definir la función para realizar las transformaciones
+transformar_datos <- function(data) {
+  
+    data <- data %>%
+    mutate(log_SALARIO = log(SALARIO), 
+           log_HHI = log(HHI),
+           EXPERIENCIA_2 = EXPERIENCIA^2,
+           N_empresas = 1/exp(N))
+    
+    data <- data %>%
+      group_by(IPF) %>%
+      mutate(log_HHI_lag = dplyr::lag(log_HHI, n = 1, default = NA)) %>%
+      ungroup()
+    
+    data <- data %>%
+    mutate(log_HHI.SEXO = log_HHI*SEXO,
+           log_N.SEXO = N*SEXO,
+           log_HHI_lag.SEXO = log_HHI_lag*SEXO)
+    
+  dummy_vars <- c("SEXO")
+  # Convertir variables dummy a factores
+  data <- data %>%
+    mutate(across(all_of(dummy_vars), ~ as.factor(.)))
+  
+  data <- data %>%
+    filter(PUBLICO == 1)
+
+  
+  # Definir los cortes y etiquetas para la variable EDUCACION
+  breaks_1 <- c(0, 30, 42, 99)
+  labels_1 <- c("Basica", "Media", "Superior")
+  
+  # Discretizar EDUCACION en una variable categórica
+  data$EDUCACION <- cut(data$EDUCACION, breaks = breaks_1, labels = labels_1, include.lowest = TRUE,
+                               include.highest = TRUE)
+  data$EDUCACION <- ifelse(is.na(data$EDUCACION), "Media", as.character(data$EDUCACION))
+  
+  # Convertir EDUCACION a tipo factor
+  data$EDUCACION <- as.factor(data$EDUCACION)
+  
+  # Imprimir un resumen y la estructura del dataframe
+  print(summary(data))
+  print(str(data))
+  
+  # Devolver el dataframe transformado
+  return(data)
+}
+
+```
+
+```{r}
+
+# Supongamos que tu dataframe se llama umbalance_d y las variables dummy están en una lista llamada dummy_vars
+# Llamar a la función con los datos y las variables dummy
+#umbalance_d <- transformar_datos(umbalance_d)
+#umbalance_d_2<- transformar_datos(umbalance_d_2)
+#umbalance_d_8<- transformar_datos(umbalance_d_8)
+#umbalance_d_12<- transformar_datos(umbalance_d_12)
+umbalance_d_14<- transformar_datos(umbalance_d_14)
+#balance_d_14<- transformar_datos(balance_d_14)
+
+# Ver el resultado
+
+```
+
+## Efectos Fijos OLS
+
+```{r}
+# Definir la función con un parámetro adicional para 'tex'
+modelos_regresion <- function(data, tex_output = FALSE) {
+  # Especificar los modelos
+  fe_ols <- feols(log_SALARIO ~ log_HHI + SEXO + log_HHI.SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA
+                  + EXPERIENCIA_2 + EDUCACION | PROVINCIA + ACTIVIDAD_ECONOMICA + Year, data)
+  
+  fe_iv <- feols(log_SALARIO ~ SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA + EXPERIENCIA_2 + EDUCACION 
+                 | PROVINCIA + ACTIVIDAD_ECONOMICA + Year | log_HHI + log_HHI.SEXO  ~ N +
+                   log_N.SEXO, data)
+  
+  fe_iv_HHI <- feols(log_SALARIO ~ SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA + EXPERIENCIA_2 + EDUCACION | PROVINCIA
+                     + ACTIVIDAD_ECONOMICA + Year | log_HHI + log_HHI.SEXO ~ log_HHI_lag + log_HHI_lag.SEXO, data)
+  
+  fe_2iv <- feols(log_SALARIO ~ SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA + EXPERIENCIA_2 + EDUCACION 
+                  | PROVINCIA + ACTIVIDAD_ECONOMICA + Year | log_HHI + log_HHI.SEXO ~ N +
+                    log_N.SEXO + log_HHI_lag + log_HHI_lag.SEXO, data)
+  etable(fe_ols, fe_iv, fe_iv_HHI, fe_2iv, tex = tex_output)
+  }
+  
+  
+  # Definir la función con un parámetro adicional para 'tex'
+modelos_regresion_2 <- function(data, tex_output = FALSE) {
+  # Especificar los modelos
+  fe_ols <- feols(log_SALARIO ~ log_HHI + SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA
+                  + EXPERIENCIA_2 + EDUCACION | PROVINCIA + ACTIVIDAD_ECONOMICA + Year, data)
+  
+  fe_iv <- feols(log_SALARIO ~ SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA + EXPERIENCIA_2 + EDUCACION 
+                 | PROVINCIA + ACTIVIDAD_ECONOMICA + Year | log_HHI  ~ N
+                   , data)
+  
+  fe_iv_HHI <- feols(log_SALARIO ~ SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA + EXPERIENCIA_2 + EDUCACION | PROVINCIA
+                     + ACTIVIDAD_ECONOMICA + Year | log_HHI ~ log_HHI_lag , data)
+  
+  fe_2iv <- feols(log_SALARIO ~ SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA + EXPERIENCIA_2 + EDUCACION 
+                  | PROVINCIA + ACTIVIDAD_ECONOMICA + Year | log_HHI ~ N
+                     + log_HHI_lag, data)
+
+  # Crear la tabla con la opción de 'tex' controlada por el parámetro
+  etable(fe_ols, fe_iv, fe_iv_HHI, fe_2iv, tex = tex_output)
+
+
+}
+
+```
+
+```{r}
+
+modelos_regresion(umbalance_d_14, tex_output = TRUE)
+
+```
+
+```{r}
+# Especificar los modelos
+fe_ols <- feols(log_SALARIO ~ log_HHI + SEXO +log_HHI*SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA
+                + EXPERIENCIA_2 + EDUCACION | PROVINCIA + ACTIVIDAD_ECONOMICA + Year, umbalance_d_14)
+
+fe_iv <- feols(log_SALARIO ~ SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA + EXPERIENCIA_2 + EDUCACION
+               | PROVINCIA + ACTIVIDAD_ECONOMICA + Year| log_HHI ~ N, umbalance_d_14)
+
+fe_iv_HHI <- feols(log_SALARIO ~ SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA + EXPERIENCIA_2 + EDUCACION | PROVINCIA
+                   + ACTIVIDAD_ECONOMICA + Year| log_HHI ~ log_HHI_lag, umbalance_d_14)
+
+fe_2iv <- feols(log_SALARIO ~ SEXO + HIJOS + HIJOS*SEXO + EXPERIENCIA + EXPERIENCIA_2 + EDUCACION 
+                | PROVINCIA + ACTIVIDAD_ECONOMICA + Year | log_HHI ~ N + log_HHI_lag, umbalance_d_14)
+
+```
+
+
+
+```{r}
+etable(fe_ols,fe_iv,fe_iv_HHI,fe_2iv)
+
+```
+
+```{r}
+summary(fe_iv, stage = 1, tex = TRUE)
+```
